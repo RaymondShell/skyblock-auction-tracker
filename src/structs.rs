@@ -15,7 +15,7 @@ pub struct Auction {
     pub item_name: String,
     pub category: String,
     pub tier: String,
-    pub starting_bid: u32,
+    pub starting_bid: u64,
     pub item_bytes: String,
     pub bin: bool,
 

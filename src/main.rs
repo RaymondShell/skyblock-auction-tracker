@@ -2,7 +2,6 @@ mod structs;
 
 use hyper::{Client, Uri};
 use tokio;
-use std::error::Error;
 use hyper_tls::HttpsConnector;
 use futures::future::join_all;
 use anyhow::{Result, Context}; // Import Result and Context
@@ -12,18 +11,40 @@ async fn fetch_auctions(client: &Client<HttpsConnector<hyper::client::HttpConnec
     let url = format!("https://api.hypixel.net/v2/skyblock/auctions?page={}", page);
     let uri: Uri = url.parse().context("Invalid URI")?;
 
-    let resp = client.get(uri).await.context("Failed to fetch auctions")?;
+    // Number of retry attempts
+    const MAX_RETRIES: u32 = 3;
 
-    if !resp.status().is_success() {
-        eprintln!("Failed to fetch data for page {}: {}", page, resp.status());
-        return Ok(structs::Auctions { totalPages: 0, page: 0, auctions: vec![] , totalAuctions: 0}); // Return an empty Auctions struct on failure
+    for attempt in 0..MAX_RETRIES {
+        let resp = client.get(uri.clone()).await.context("Failed to fetch auctions")?; // Clone the uri here
+
+        if !resp.status().is_success() {
+            eprintln!("Failed to fetch data for page {}: {}", page, resp.status());
+            return Ok(structs::Auctions { totalPages: 0, page: 0, auctions: vec![], totalAuctions: 0 }); // Return an empty Auctions struct on failure
+        }
+
+        let body_bytes = hyper::body::to_bytes(resp.into_body()).await.context("Failed to read response body")?;
+
+        // Attempt to parse JSON, adding the URL to the error context
+        match serde_json::from_slice::<structs::Auctions>(&body_bytes) {
+            Ok(auctions_data) => return Ok(auctions_data),
+            Err(e) => {
+                eprintln!("Attempt {}: Failed to parse JSON from URL: {}. Error: {}", attempt + 1, url, e);
+                // If the last attempt fails, return the error.
+                if attempt == MAX_RETRIES - 1 {
+                    return Err(anyhow::anyhow!("Failed to parse JSON after {} attempts from URL: {}", MAX_RETRIES, url));
+                }
+                // Wait before retrying
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await; // Wait 1 second before retrying
+            }
+        }
     }
 
-    let body_bytes = hyper::body::to_bytes(resp.into_body()).await.context("Failed to read response body")?;
-    let auctions_data: structs::Auctions = serde_json::from_slice(&body_bytes).context("Failed to parse JSON")?;
-
-    Ok(auctions_data)
+    // If we reach here, it means all retries failed
+    Err(anyhow::anyhow!("Unexpected error occurred while fetching auctions from URL: {}", url))
 }
+
+
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
